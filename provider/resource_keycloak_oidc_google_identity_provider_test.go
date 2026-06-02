@@ -248,6 +248,35 @@ func TestAccKeycloakOidcGoogleIdentityProvider_basicUpdateAll(t *testing.T) {
 	})
 }
 
+func TestAccKeycloakOidcGoogleIdentityProvider_clientSecretWriteOnly(t *testing.T) {
+	t.Parallel()
+
+	oidcName := acctest.RandomWithPrefix("tf-acc")
+	clientSecretWO := acctest.RandomWithPrefix("tf-acc")
+	clientSecretWOVersion := 1
+
+	// the keycloak client is obfuscating the client_secret value, therefore we can't assert its value
+	resource.Test(t, resource.TestCase{
+		ProtoV5ProviderFactories: testAccProtoV5ProviderFactories,
+		PreCheck:                 func() { testAccPreCheck(t) },
+		CheckDestroy:             testAccCheckKeycloakOidcGoogleIdentityProviderDestroy(),
+		Steps: []resource.TestStep{
+			{
+				// test CREATION of the client_secret via write-only attribute
+				Config: testKeycloakOidcGoogleIdentityProvider_clientSecretWriteOnly(oidcName, clientSecretWO, clientSecretWOVersion),
+				Check: resource.ComposeTestCheckFunc(
+					// assert openid client against the Keycloak's API response (value SHOULD be the new one)
+					testAccCheckKeycloakOidcGoogleIdentityProviderExists("keycloak_oidc_google_identity_provider.oidc"),
+
+					// assert openid client against the Terraform state (client_secret value SHOULD NOT be stored in state)
+					resource.TestCheckNoResourceAttr("keycloak_oidc_google_identity_provider.oidc", "client_secret"),
+					resource.TestCheckResourceAttr("keycloak_oidc_google_identity_provider.oidc", "client_secret_wo_version", strconv.Itoa(clientSecretWOVersion)),
+				),
+			},
+		},
+	})
+}
+
 func testAccCheckKeycloakOidcGoogleIdentityProviderExists(resourceName string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		_, err := getKeycloakOidcGoogleIdentityProviderFromState(s, resourceName)
@@ -419,4 +448,51 @@ resource "keycloak_oidc_google_identity_provider" "google" {
 	org_redirect_mode_email_matches = true
 }
 	`, testAccRealm.Realm, organizationName)
+}
+
+func testKeycloakOidcGoogleIdentityProvider_clientSecretWriteOnlyFromComputedValue(oidc string) string {
+	// 'client_secret_wo_version' is always 1
+	// we are making it conditional to make the value unknown during the validation
+	// which is the same situation as when the value is not hardcoded, but comes from other module
+	return fmt.Sprintf(`
+data "keycloak_realm" "realm" {
+	realm = "%s"
+}
+
+resource "keycloak_openid_client" "secret_source" {
+	realm_id    = data.keycloak_realm.realm.id
+	client_id   = "%s-secret-source"
+	access_type = "CONFIDENTIAL"
+}
+
+resource "keycloak_oidc_google_identity_provider" "oidc" {
+	realm                    = data.keycloak_realm.realm.id
+	alias                    = "%s"
+	authorization_url        = "https://example.com/auth"
+	token_url                = "https://example.com/token"
+	client_id                = "example_id"
+	client_secret_wo         = keycloak_openid_client.secret_source.client_secret
+	client_secret_wo_version = keycloak_openid_client.secret_source.id != "" ? 1 : 0
+}
+	`, testAccRealm.Realm, oidc, oidc)
+}
+
+func testKeycloakOidcGoogleIdentityProvider_clientSecretWriteOnly(oidc, clientSecretWriteOnly string, clientSecretWriteOnlyVersion int) string {
+	return fmt.Sprintf(`
+data "keycloak_realm" "realm" {
+	realm = "%s"
+}
+
+resource "keycloak_oidc_google_identity_provider" "oidc" {
+	realm             		 = data.keycloak_realm.realm.id
+	alias             		 = "%s"
+	authorization_url 		 = "https://example.com/auth"
+	token_url         		 = "https://example.com/token"
+	client_id         		 = "example_id"
+	client_secret_wo         = "%s"
+	client_secret_wo_version = "%d"
+
+	issuer = "hello"
+}
+	`, testAccRealm.Realm, oidc, clientSecretWriteOnly, clientSecretWriteOnlyVersion)
 }

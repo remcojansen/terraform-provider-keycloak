@@ -1,7 +1,10 @@
 package provider
 
 import (
+	"errors"
+
 	"dario.cat/mergo"
+	"github.com/hashicorp/go-cty/cty"
 	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/keycloak/terraform-provider-keycloak/keycloak"
@@ -34,10 +37,27 @@ func resourceKeycloakOidcFacebookIdentityProvider() *schema.Resource {
 			Description: "The client identifier registered with the Facebook identity provider.",
 		},
 		"client_secret": {
-			Type:        schema.TypeString,
-			Required:    true,
-			Sensitive:   true,
-			Description: "The client secret registered with the Facebook identity provider.",
+			Type:          schema.TypeString,
+			Optional:      true,
+			Sensitive:     true,
+			Description:   "Client Secret.",
+			ConflictsWith: []string{"client_secret_wo", "client_secret_wo_version"},
+		},
+		"client_secret_wo": {
+			Type:          schema.TypeString,
+			Optional:      true,
+			Sensitive:     true,
+			WriteOnly:     true,
+			ConflictsWith: []string{"client_secret"},
+			RequiredWith:  []string{"client_secret_wo_version"},
+			Description:   "Client Secret as write-only argument",
+		},
+		"client_secret_wo_version": {
+			Type:          schema.TypeInt,
+			Optional:      true,
+			ConflictsWith: []string{"client_secret"},
+			RequiredWith:  []string{"client_secret_wo"},
+			Description:   "Version of the Client secret write-only argument",
 		},
 		"fetched_fields": { //fetchedFields
 			Type:        schema.TypeString,
@@ -74,6 +94,10 @@ func resourceKeycloakOidcFacebookIdentityProvider() *schema.Resource {
 	oidcResource.CreateContext = resourceKeycloakIdentityProviderCreate(getOidcFacebookIdentityProviderFromData, setOidcFacebookIdentityProviderData)
 	oidcResource.ReadContext = resourceKeycloakIdentityProviderRead(setOidcFacebookIdentityProviderData)
 	oidcResource.UpdateContext = resourceKeycloakIdentityProviderUpdate(getOidcFacebookIdentityProviderFromData, setOidcFacebookIdentityProviderData)
+	oidcResource.ValidateRawResourceConfigFuncs = []schema.ValidateRawResourceConfigFunc{
+		// validate that argument is required if none of the checkExists attributes exist
+		requiredWithoutAll(cty.GetAttrPath("client_secret"), []cty.Path{cty.GetAttrPath("client_secret_wo"), cty.GetAttrPath("client_secret_wo_version")}),
+	}
 	return oidcResource
 }
 
@@ -98,6 +122,15 @@ func getOidcFacebookIdentityProviderFromData(data *schema.ResourceData, keycloak
 		DisableUserInfo:             types.KeycloakBoolQuoted(data.Get("disable_user_info").(bool)),
 	}
 
+	if data.Get("client_secret_wo_version").(int) != 0 && data.HasChange("client_secret_wo_version") {
+		clientSecretWriteOnly, clientSecretWriteOnlyDiags := data.GetRawConfigAt(cty.GetAttrPath("client_secret_wo"))
+		if clientSecretWriteOnlyDiags.HasError() {
+			return nil, errors.New("error reading 'client_secret_wo' argument")
+		}
+
+		facebookOidcIdentityProviderConfig.ClientSecret = clientSecretWriteOnly.AsString()
+	}
+
 	if err := mergo.Merge(facebookOidcIdentityProviderConfig, defaultConfig); err != nil {
 		return nil, err
 	}
@@ -116,5 +149,8 @@ func setOidcFacebookIdentityProviderData(data *schema.ResourceData, identityProv
 	data.Set("accepts_prompt_none_forward_from_client", identityProvider.Config.AcceptsPromptNoneForwFrmClt)
 	data.Set("disable_user_info", identityProvider.Config.DisableUserInfo)
 
+	if v, ok := data.GetOk("client_secret_wo_version"); ok && v != nil {
+		data.Set("client_secret_wo_version", v.(int))
+	}
 	return nil
 }
